@@ -1,61 +1,82 @@
-sudo: false
-language: java
-os:
-  - linux
-  - osx
-
-osx_image: xcode7.1
-
+addons: {}
+after_script:
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./src/travis/remove-key.sh;fi
+after_success:
+- export JAVA_TOOL_OPTIONS=-javaagent:$DFB_PROJECT_DIR/jacoco-agent-jdk8.jar=destfile=$DFB_PROJECT_DIR/jacoco.exec
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then travis_retry mvn test -Djacoco.skip=true
+  -Dcobertura.skip=true -Dmaven.clover.skip=true --batch-mode --settings ~/settings.xml
+  -Djava.awt.headless=true -Dkeystore.password=$KEYSTORE_PASSWD -Dgpg.defaultKeyring=false
+  -Dgpg-keyname=1481F619 -Dgpg.passphrase=$GPG_PASSPHRASE -Dgpg.publicKeyring=src/travis/pubring.gpg
+  -Dgpg.secretKeyring=src/travis/secretring.gpg clean deploy -P deployment,create-dmg;fi
+- ./df-build.sh
+- env > env.file
+- curl -sL https://raw.githubusercontent.com/travis-ci/artifacts/master/install |
+  bash
+- artifacts upload --key $AWS_ACCESS_KEY_ID --secret $AWS_SECRET_ACCESS_KEY --bucket
+  $DFB_AWS_BUCKET --target-paths $DFB_AWS_BUILD_PATH $(git ls-files -oi -x *.exec)
+- artifacts upload --key $AWS_ACCESS_KEY_ID --secret $AWS_SECRET_ACCESS_KEY --bucket
+  $DFB_AWS_BUCKET --target-paths $DFB_AWS_BUILD_PATH ${DFB_PROJECT_DIR}/env.file
+before_install:
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then export JAVA_HOME=$(/usr/libexec/java_home);fi
+- if [ "$TRAVIS_OS_NAME" == "linux" ]; then git clone --branch 1.5 https://github.com/dscharrer/innoextract.git;fi
+- if [ "$TRAVIS_OS_NAME" == "linux" ]; then cd innoextract && mkdir -p build && cd
+  build && cmake .. && make && export PATH=$PATH:$PWD && cd ../..;fi
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then openssl aes-256-cbc -k "$ENCRYPTION_SECRET"
+  -in src/travis/certs/dev_id.cer.enc -d -a -out src/travis/certs/dev_id.cer;fi
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then openssl aes-256-cbc -k "$ENCRYPTION_SECRET"
+  -in src/travis/certs/dev_id.p12.enc -d -a -out src/travis/certs/dev_id.p12;fi
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./src/travis/add-key.sh;fi
+- openssl aes-256-cbc -k "$GPG_PUBRING_ENCRYPTION" -in src/travis/pubring.gpg.enc
+  -d -a -out src/travis/pubring.gpg
+- openssl aes-256-cbc -k "$GPG_SECRETRING_ENCRYPTION" -in src/travis/secretring.gpg.enc
+  -d -a -out src/travis/secretring.gpg
+- wget -O beforebuild.sh $DFB_AGENTS_URL/beforebuild.sh
+- chmod a+x beforebuild.sh
+- ./beforebuild.sh
+before_script:
+- echo "<settings><servers><server><id>ossrh</id><username>\${env.OSSRH_USER}</username><password>\${env.OSSRH_PASS}</password></server><server><id>netbeans</id></server></servers></settings>"
+  > ~/settings.xml
 branches:
   only:
-    - master
-
-addons:
-  apt:
-    packages:
-    - wine
-    - build-essential
-    - cmake
-    - libboost-all-dev
-    - liblzma-dev
-
+  - master
 cache:
   directories:
-    - $HOME/.m2
-
-before_install:
-  # Fix java home path issue on osx (issue #2839)
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then export JAVA_HOME=$(/usr/libexec/java_home);fi
-
-  # Build & install innoextract
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then git clone --branch 1.5 https://github.com/dscharrer/innoextract.git;fi
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then cd innoextract && mkdir -p build && cd build && cmake .. && make && export PATH=$PATH:$PWD && cd ../..;fi
-
-  # OS X keychain init
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then openssl aes-256-cbc -k "$ENCRYPTION_SECRET" -in src/travis/certs/dev_id.cer.enc -d -a -out src/travis/certs/dev_id.cer;fi
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then openssl aes-256-cbc -k "$ENCRYPTION_SECRET" -in src/travis/certs/dev_id.p12.enc -d -a -out src/travis/certs/dev_id.p12;fi
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./src/travis/add-key.sh;fi
-
-  # GPG install
-  - openssl aes-256-cbc -k "$GPG_PUBRING_ENCRYPTION" -in src/travis/pubring.gpg.enc -d -a -out src/travis/pubring.gpg
-  - openssl aes-256-cbc -k "$GPG_SECRETRING_ENCRYPTION" -in src/travis/secretring.gpg.enc -d -a -out src/travis/secretring.gpg
-
-install:
-  # Install InnoSetup
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then printf '#!/bin/bash\nrm -rf /tmp/inno\nmkdir /tmp/inno\ncd /tmp/inno\nwget -O is.exe http://files.jrsoftware.org/is/5/isetup-5.5.5.exe\ninnoextract is.exe\nmkdir -p ~/\".wine/drive_c/inno\"\ncp -a app/* ~/\".wine/drive_c/inno\"' > innoinstall.sh && chmod +x ./innoinstall.sh && ./innoinstall.sh;fi
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then printf '#!/bin/sh\nexport DISPLAY=\":0.0\"\nscriptname=$1\n[ -f \"$scriptname\" ] && scriptname=$(winepath -w \"$scriptname\")\nwine \"C:\inno\ISCC.exe\" \"$scriptname\" \"/q\"' > iscc && chmod +x ./iscc && export PATH=$PATH:$PWD;fi
-
-  # Replace icon
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then cp modules/application/src/main/app-resources/ReplaceVistaIcon.exe ~/".wine/drive_c/ReplaceVistaIcon.exe" && printf '#!/bin/sh\nunset DISPLAY\nexecutable=$1\niconfile=$2\niconid=$3\nwine "C:\ReplaceVistaIcon.exe" "$executable" "$iconfile" "$iconid"' > replacevistaicon && chmod +x ./replacevistaicon;fi
-
-before_script:
-  # Setup Maven's settings.xml
-  - echo "<settings><servers><server><id>ossrh</id><username>\${env.OSSRH_USER}</username><password>\${env.OSSRH_PASS}</password></server><server><id>netbeans</id></server></servers></settings>" > ~/settings.xml
-
+  - $HOME/.m2
+env:
+  global:
+  - DFB_PROJECT_DIR=$(pwd)
+  - TMP_PROJECT_PARENT_DIR=$(dirname $DFB_PROJECT_DIR)
+  - DFB_BUILD_ID=$TRAVIS_BUILD_ID
+  - DFB_PRODUCT_NAME=$(basename $DFB_PROJECT_DIR)
+  - DFB_OWNER_NAME=$(basename $TMP_PROJECT_PARENT_DIR)
+  - DFB_PRODUCT_KEY=${DFB_OWNER_NAME}_${DFB_PRODUCT_NAME}
+  - DFB_AWS_BUCKET=aline-external-ci-artifacts
+  - DFB_AGENTS_URL=https://s3.amazonaws.com/${DFB_AWS_BUCKET}/agents
+  - DFB_PACKAGING_URL=s3://${DFB_AWS_BUCKET}/artifacts/travis/
+  - DFB_AWS_BUILD_PATH=/artifacts/travis/${DFB_PRODUCT_KEY}/${DFB_BUILD_ID}/output/
+  - AWS_ACCESS_KEY_ID=AKIAIIU2LBOCCKXAIFZQ
+  - AWS_SECRET_ACCESS_KEY=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
+  - DFB_JTO=-javaagent:${DFB_PROJECT_DIR}/dfbuild-agent.jar=PACKAGING_BASE_URI=$DFB_PACKAGING_URL,PRODUCT_KEY=$DFB_PRODUCT_KEY/,BUILD_KEY=$DFB_BUILD_ID/,MODULES_KEY=modules/,START_TIME=0,BUILD_BASE_DIR=$DFB_PROJECT_DIR
+install: 'true'
+jdk:
+- oraclejdk8
+language: java
+notifications: {}
+os:
+- linux
+- osx
+osx_image: xcode7.1
 script:
-  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then travis_retry mvn --batch-mode --settings ~/settings.xml -Djava.awt.headless=true -Dkeystore.password=$KEYSTORE_PASSWD -Dgpg.defaultKeyring=false -Dgpg-keyname=1481F619 -Dgpg.passphrase=$GPG_PASSPHRASE -Dgpg.publicKeyring=src/travis/pubring.gpg -Dgpg.secretKeyring=src/travis/secretring.gpg clean deploy -P deployment,create-modules,create-sources,create-javadoc,create-autoupdate,replace-windows-icon,create-exe,create-targz;fi
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then travis_retry mvn --batch-mode --settings ~/settings.xml -Djava.awt.headless=true -Dkeystore.password=$KEYSTORE_PASSWD -Dgpg.defaultKeyring=false -Dgpg-keyname=1481F619 -Dgpg.passphrase=$GPG_PASSPHRASE -Dgpg.publicKeyring=src/travis/pubring.gpg -Dgpg.secretKeyring=src/travis/secretring.gpg clean deploy -P deployment,create-dmg;fi
-
-after_script:
-  # Clean OS X keychain
-  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./src/travis/remove-key.sh;fi
+- export JAVA_TOOL_OPTIONS=$DFB_JTO
+- if [ "$TRAVIS_OS_NAME" == "linux" ]; then travis_retry mvn -Djacoco.skip=true -Dcobertura.skip=true
+  -Dmaven.clover.skip=true --batch-mode --settings ~/settings.xml -Djava.awt.headless=true
+  -Dkeystore.password=$KEYSTORE_PASSWD -Dgpg.defaultKeyring=false -Dgpg-keyname=1481F619
+  -Dgpg.passphrase=$GPG_PASSPHRASE -Dgpg.publicKeyring=src/travis/pubring.gpg -Dgpg.secretKeyring=src/travis/secretring.gpg
+  clean deploy -P deployment,create-modules,create-sources,create-javadoc,create-autoupdate,replace-windows-icon,create-exe,create-targz;fi
+- if [ "$TRAVIS_OS_NAME" == "osx" ]; then travis_retry mvn -Djacoco.skip=true -Dcobertura.skip=true
+  -Dmaven.clover.skip=true --batch-mode --settings ~/settings.xml -Djava.awt.headless=true
+  -Dkeystore.password=$KEYSTORE_PASSWD -Dgpg.defaultKeyring=false -Dgpg-keyname=1481F619
+  -Dgpg.passphrase=$GPG_PASSPHRASE -Dgpg.publicKeyring=src/travis/pubring.gpg -Dgpg.secretKeyring=src/travis/secretring.gpg
+  clean deploy -P deployment,create-dmg;fi
+sudo: false
+# Modified by IntegrationTestInstrumentation at 2016-05-14 05:02:31.396533
